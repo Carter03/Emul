@@ -1,129 +1,107 @@
-#!/usr/bin/python
-#
-# YAPTB Bluetooth keyboard emulation service
-# keyboard copy client. 
-# Reads local key events and forwards them to the btk_server DBUS service
-#
-# Adapted from www.linuxuser.co.uk/tutorials/emulate-a-bluetooth-keyboard-with-the-raspberry-pi
-#
-#
-import os #used to all external commands
-import sys # used to exit the script
 import dbus
-import dbus.service
-import dbus.mainloop.glib
-import time
-import evdev # used to get input from the keyboard
-from evdev import *
-import keymap # used to map evdev input to hid keodes
+import evdev
+import keymap
+from time import sleep
+
+HID_DBUS = 'org.yaptb.btkbservice'
+HID_SRVC = '/org/yaptb/btkbservice'
 
 
+class Kbrd:
+    """
+    Take the events from a physically attached keyboard and send the
+    HID messages to the keyboard D-Bus server.
+    """
+    def __init__(self):
+        self.target_length = 6
+        self.mod_keys = 0b00000000
+        self.pressed_keys = []
+        self.have_kb = False
+        self.dev = None
+        self.bus = dbus.SystemBus()
+        self.btkobject = self.bus.get_object(HID_DBUS,
+                                             HID_SRVC)
+        self.btk_service = dbus.Interface(self.btkobject,
+                                          HID_DBUS)
+        self.wait_for_keyboard()
 
-#Define a client to listen to local key events
-class Keyboard():
+    def wait_for_keyboard(self, event_id=0):
+        """
+        Connect to the input event file for the keyboard.
+        Can take a parameter of an integer that gets appended to the end of
+        /dev/input/event
+        :param event_id: Optional parameter if the keyboard is not event0
+        """
+        while not self.have_kb:
+            try:
+                # try and get a keyboard - should always be event0 as
+                # we're only plugging one thing in
+                self.dev = evdev.InputDevice('/dev/input/event{}'.format(
+                    event_id))
+                self.have_kb = True
+            except OSError:
+                print('Keyboard not found, waiting 3 seconds and retrying')
+                sleep(3)
+            print('found a keyboard')
 
+    def update_mod_keys(self, mod_key, value):
+        """
+        Which modifier keys are active is stored in an 8 bit number.
+        Each bit represents a different key. This method takes which bit
+        and its new value as input
+        :param mod_key: The value of the bit to be updated with new value
+        :param value: Binary 1 or 0 depending if pressed or released
+        """
+        bit_mask = 1 << (7-mod_key)
+        if value: # set bit
+            self.mod_keys |= bit_mask
+        else: # clear bit
+            self.mod_keys &= ~bit_mask
 
-	def __init__(self):
-		#the structure for a bt keyboard input report (size is 10 bytes)
+    def update_keys(self, norm_key, value):
+        if value < 1:
+            self.pressed_keys.remove(norm_key)
+        elif norm_key not in self.pressed_keys:
+            self.pressed_keys.insert(0, norm_key)
+        len_delta = self.target_length - len(self.pressed_keys)
+        if len_delta < 0:
+            self.pressed_keys = self.pressed_keys[:len_delta]
+        elif len_delta > 0:
+            self.pressed_keys.extend([0] * len_delta)
 
-		self.state=[
-			0xA1, #this is an input report
-			0x01, #Usage report = Keyboard
-			#Bit array for Modifier keys
-			[0,	#Right GUI - Windows Key
-			 0,	#Right ALT
-			 0, 	#Right Shift
-			 0, 	#Right Control
-			 0,	#Left GUI
-			 0, 	#Left ALT
-			 0,	#Left Shift
-			 0],	#Left Control
-			0x00,	#Vendor reserved
-			0x00,	#rest is space for 6 keys
-			0x00,
-			0x00,
-			0x00,
-			0x00,
-			0x00]
+    @property
+    def state(self):
+        """
+        property with the HID message to send for the current keys pressed
+        on the keyboards
+        :return: bytes of HID message
+        """
+        return [0xA1, 0x01, self.mod_keys, 0, *self.pressed_keys]
 
-		print "setting up DBus Client"	
+    def send_keys(self):
+        self.btk_service.send_keys(self.state)
 
-		self.bus = dbus.SystemBus()
-		self.btkservice = self.bus.get_object('org.yaptb.btkbservice','/org/yaptb/btkbservice')
-		self.iface = dbus.Interface(self.btkservice,'org.yaptb.btkbservice')	
-
-
-		print "waiting for keyboard"
-
-		#keep trying to key a keyboard
-		have_dev=False
-		while have_dev==False:
-			try:
-				#try and get a keyboard - should always be event0 as
-				#we're only plugging one thing in
-				self.dev = InputDevice("/dev/input/event0")
-				have_dev=True
-			except OSError:
-				print "Keyboard not found, waiting 3 seconds and retrying"
-				time.sleep(3)
-			print "found a keyboard"
-		
-
-
-	def change_state(self,event):
-		evdev_code=ecodes.KEY[event.code]
-		modkey_element = keymap.modkey(evdev_code)
-		
-		if modkey_element > 0:
-			if self.state[2][modkey_element] ==0:
-				self.state[2][modkey_element]=1
-			else:
-				self.state[2][modkey_element]=0
-		
-		else:
-	
-			#Get the keycode of the key
-			hex_key = keymap.convert(ecodes.KEY[event.code])
-			#Loop through elements 4 to 9 of the inport report structure
-			for i in range(4,10):
-				if self.state[i]== hex_key and event.value ==0:
-					#Code 0 so we need to depress it
-					self.state[i] = 0x00
-				elif self.state[i] == 0x00 and event.value==1:
-					#if the current space if empty and the key is being pressed
-					self.state[i]=hex_key
-					break;
-					
-
-	#poll for keyboard events
-	def event_loop(self):
-		for event in self.dev.read_loop():
-			#only bother if we hit a key and its an up or down event
-			if event.type==ecodes.EV_KEY and event.value < 2:
-				self.change_state(event)
-				self.send_input()
-
-
-	#forward keyboard events to the dbus service
-   	def send_input(self):
-
-		bin_str=""
-		element=self.state[2]
-		for bit in element:
-			bin_str += str(bit)
-
-	
-
-		self.iface.send_keys(int(bin_str,2),self.state[4:10]  )
+    def event_loop(self):
+        """
+        Loop to check for keyboard events and send HID message
+        over D-Bus keyboard service when they happen
+        """
+        print('Listening...')
+        for event in self.dev.read_loop():
+            # only bother if we hit a key and its an up or down event
+            if event.type == evdev.ecodes.EV_KEY and event.value < 2:
+                key_str = evdev.ecodes.KEY[event.code]
+                mod_key = keymap.modkey(key_str)
+                if mod_key > -1:
+                    self.update_mod_keys(mod_key, event.value)
+                else:
+                    self.update_keys(keymap.convert(key_str), event.value)
+            self.send_keys()
 
 
+if __name__ == '__main__':
+    print('Setting up keyboard')
+    kb = Kbrd()
 
-if __name__ == "__main__":
-
-	print "Setting up keyboard"
-
-	kb = Keyboard()
-
-	print "starting event loop"
-	kb.event_loop()
-
+    print('starting event loop')
+    kb.event_loop()

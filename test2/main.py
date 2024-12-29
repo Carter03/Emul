@@ -49,7 +49,7 @@ class BluetoothBluezProfile(dbus.service.Object):
 # advertize a SDP record using our bluez profile class
 #
 class BTDevice:
-    BT_ADDRESS = "DC:A6:32:60:EE:13"  # use hciconfig to check
+    BT_ADDRESS = "B8:27:EB:44:25:10"  # use hciconfig to check
     BT_DEV_NAME = "Real_Keyboard"
 
     # define some constants
@@ -185,7 +185,7 @@ def main():
         sys.exit("Only root can run this script")
     print("restart bluetooth")
     os.system("sudo service bluetoothd stop")
-    os.system("sudo service dbus restart")
+    # os.system("sudo service dbus restart")
     os.system("sudo /usr/sbin/bluetoothd -p time&")
     os.system("sudo hciconfig hci0 down")
     os.system("sudo hciconfig hci0 up")
@@ -199,7 +199,7 @@ def main():
             break
         elif v == 'm':
             print("send mouse")
-            device.send_mouse(0, [10, 30, 1])
+            device.send_mouse(0, [10, 30, 0])
         else:
             print('send:', v)
             send_string(device, v)

@@ -8,6 +8,7 @@ import bluetooth
 import dbus.service
 import dbus.mainloop.glib
 from dbus.mainloop.glib import DBusGMainLoop
+import evdev
 
 
 class BluetoothBluezProfile(dbus.service.Object):
@@ -49,7 +50,7 @@ class BluetoothBluezProfile(dbus.service.Object):
 # advertize a SDP record using our bluez profile class
 #
 class BTDevice:
-    BT_ADDRESS = "B8:27:EB:44:25:10"  # use hciconfig to check
+    BT_ADDRESS = "DC:A6:32:60:EE:13"  # use hciconfig to check
     BT_DEV_NAME = "Real_Keyboard"
 
     # define some constants
@@ -179,6 +180,9 @@ def send_string(device, string, key_down_time=0.01, key_delay=0.05):
             device.send_keys(0, [0, 0, 0, 0, 0, 0])
             time.sleep(key_delay)
 
+from keyboard import Kbrd, YouTubeConverter
+
+
 
 def main():
     if not os.geteuid() == 0:
@@ -190,19 +194,32 @@ def main():
     os.system("sudo hciconfig hci0 down")
     os.system("sudo hciconfig hci0 up")
     DBusGMainLoop(set_as_default=True)
+
+    yc = YouTubeConverter((40, 60))
+
     device = BTDevice()
     device.listen()
+
+    def process_key(key_str):
+        x, y = yc.key_move(key_str)
+        device.send_mouse(0, [x, y, 0])
+        print(f'sent "{key_str}" as ({x}, {y})')
+    
     print("init success")
-    while True:
-        v = input("input str>>>")
-        if v == 'q':
-            break
-        elif v == 'm':
-            print("send mouse")
-            device.send_mouse(0, [10, 30, 0])
-        else:
-            print('send:', v)
-            send_string(device, v)
+
+    kbrd = Kbrd()
+    kbrd.event_loop(process_key)
+
+    # while True:
+    #     v = input("input str>>>")
+    #     if v == 'q':
+    #         break
+    #     elif v == 'm':
+    #         print("send mouse")
+    #         device.send_mouse(0, [10, 30, 1])
+    #     else:
+    #         print('send:', v)
+    #         send_string(device, v)
 
 
 if __name__ == '__main__':
